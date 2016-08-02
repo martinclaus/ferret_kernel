@@ -65,9 +65,7 @@ class FerretKernel(Kernel):
             
                 if not silent and output.strip():
                     self.send_string(message=output)
-    
-                if interrupted or child_died:
-                    break
+                output = ''
 
             self.handle_graphic_output()
             self.ferretwrapper.run_command(self.CMD_CLEAR_WIN)
@@ -78,9 +76,12 @@ class FerretKernel(Kernel):
             self.ferretwrapper._expect_prompt()
             output = self.ferretwrapper.child.before.strip()
         except EOF:
-            output = (self.ferretwrapper.child.before + 'Restarting Ferret').strip()
+            output = (self.ferretwrapper.child.before
+                      + 'Ferret died! Restarting Ferret').strip()
             child_died = True
             self._start_ferret()
+        if not silent and output.strip():
+            self.send_string(message=output)
 
         if interrupted:
             return self.build_return(status='abort')
