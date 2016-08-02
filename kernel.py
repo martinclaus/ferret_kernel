@@ -7,6 +7,9 @@ Created on Tue Aug  2 10:04:02 2016
 
 from ipykernel.kernelbase import Kernel
 from pexpect import replwrap, EOF
+from tempfile import mkdtemp, mkstemp
+from shutil import rmtree
+from os import remove
 
 __version__ = '0.1'
 
@@ -30,6 +33,7 @@ class FerretKernel(Kernel):
     def __init__(self, **kwargs):
         super(FerretKernel, self).__init__(**kwargs)
         self._start_ferret()
+        self.tf_mgr = TempFileManager(".png")
 
     
     def _start_ferret(self):
@@ -76,12 +80,39 @@ class FerretKernel(Kernel):
                 'user_expressions': {},
                }
 
+    def do_shutdown(self, restart):
+        del(self.tf_mgr)
+
 #    def do_complete(self, code, cursor_pos):
 #        ''' Code completion '''
 #        # Not implemented yet
 #        super(Kernel, self).do_complete(code, cursor_pos)
 
+
+class TempFileManager(object):
+
+    def __init__(self, suffix):
+        if suffix.startswith("."):
+            self.suffix = suffix
+        else:
+            self.suffix = "." + suffix
+        self.tmp_dir = mkdtemp(prefix='ferret_kernel')
+        self.tmp_file_stack = []
     
+    def __enter__(self):
+        tfhandle, tmpfile = mkstemp(dir=self.tmp_dir, suffix=self.suffix)
+        tfhandle.close()
+        self.tmp_file_stack.append(tmpfile)
+        return tmpfile
+    
+    def __exit__(self, *args):
+        tmpfile = self.tmp_file_stack.pop()
+        remove(tmpfile)
+        
+    def __del__(self):
+        rmtree(self.tmp_dir)
+        self.tmp_file_stack = []
+
 
 if __name__ == '__main__':
     from ipykernel.kernelapp import IPKernelApp
