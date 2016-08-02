@@ -10,7 +10,7 @@ from pexpect import replwrap, EOF
 
 __version__ = '0.1'
 
-def ferret_wrapper(command="pyferret -nojnl", orig_prompt=u'yes?'):
+def ferret_wrapper(command="pyferret -nojnl -nodisplay -server", orig_prompt=u'yes?'):
     ''' Start a ferret shell and retrun a :class:`REPLWrapper` object. '''
     return replwrap.REPLWrapper(command, orig_prompt=orig_prompt,
                                 prompt_change=None)
