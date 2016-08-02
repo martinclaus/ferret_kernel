@@ -31,7 +31,10 @@ class FerretKernel(Kernel):
                      'mimetype': 'text/plain'}
     banner = "Ferret Kernel"
 
-    
+    CMD_CLEAR_WIN = "cancel window/all"
+    CMD_FRAME = 'frame/file="{0}"'
+    CMD_NEW_WIN = 'set window/new'
+
     def __init__(self, **kwargs):
         super(FerretKernel, self).__init__(**kwargs)
         self._start_ferret()
@@ -49,46 +52,53 @@ class FerretKernel(Kernel):
         code = self._parse_code(code)
 
         if not code:
-            return {'status': 'ok', 'execution_count': self.execution_count,
-                    'payload': [], 'user_expressions': {}}
+            return self.build_return()
         
         interrupted = False
-        child_died = False        
-        
-        for cline in code:
-            try:
-                output = self.ferretwrapper.run_command(cline.strip(), timeout=None).strip()
-            except KeyboardInterrupt:
-                self.ferretwrapper.child.sendintr()
-                interrupted = True
-                self.ferretwrapper._expect_prompt()
-                output = self.ferretwrapper.child.before.strip()
-            except EOF:
-                output = (self.ferretwrapper.child.before + 'Restarting Ferret').strip()
-                child_died = True
-                self._start_ferret()
-            
-            if not silent and output.strip():
-                stream_content = {'name': 'stdout',
-                                  'text': output}
-                self.send_response(self.iopub_socket, 'stream', stream_content)
-            if interrupted or child_died:
-                break
+        child_died = False
 
-        if self._has_active_window():
+        try:
+            self.ferretwrapper.run_command(self.CMD_NEW_WIN)        
+        
+            for c_line in code:
+                output = self.ferretwrapper.run_command(c_line.strip(), timeout=None).strip()
+            
+                if not silent and output.strip():
+                    self.send_string(message=output)
+    
+                if interrupted or child_died:
+                    break
+
             self.handle_graphic_output()
+            self.ferretwrapper.run_command(self.CMD_CLEAR_WIN)
+
+        except KeyboardInterrupt:
+            self.ferretwrapper.child.sendintr()
+            interrupted = True
+            self.ferretwrapper._expect_prompt()
+            output = self.ferretwrapper.child.before.strip()
+        except EOF:
+            output = (self.ferretwrapper.child.before + 'Restarting Ferret').strip()
+            child_died = True
+            self._start_ferret()
 
         if interrupted:
-            return {'status': 'abort', 'execution_count': self.execution_count}
+            return self.build_return(status='abort')
         
         if child_died:
-            return {'status': 'abort', 'execution_count': self.execution_count}
+            return self.build_return(status='abort')
         
-        return {'status': 'ok',
-                'execution_count': self.execution_count,
-                'payload': [],
-                'user_expressions': {},
-               }
+        return self.build_return()
+
+    def build_return(self, status='ok'):
+        if status == 'ok':
+            return {'status': 'ok',
+                    'execution_count': self.execution_count,
+                    'payload': [],
+                    'user_expressions': {},
+                   }
+        else:
+            return {'status': status, 'execution_count': self.execution_count}
 
     def _parse_code(self, code):
         code_lines = code.split('\n')
@@ -123,12 +133,10 @@ class FerretKernel(Kernel):
 
 
     def handle_graphic_output(self):
-        print_cmd = 'frame/file="{0}"'
-        clear_window_cmd = "ca window/all"
         output = ''
         with self.tf_mgr as tmpfile:
             try:
-                output += self.ferretwrapper.run_command(print_cmd.format(tmpfile),
+                output += self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
                                                          timeout=None)
                 with open(tmpfile, 'rb') as f:
                     image = f.read()
@@ -136,20 +144,25 @@ class FerretKernel(Kernel):
                 if image_type is None:
                     raise ValueError("Not a valid image: %s" % tmpfile)
                 image_data = base64.b64encode(image).decode('ascii')
-                content = {'data': {'image/{0}'.format(image_type): image_data},
-                           'metadata': {}}
             except ValueError as e:
-                message = {'name': 'stdout', 'text': str(e)}
-                self.send_response(self.iopub_socket, 'stream', message)
+                self.send_string(str(e))
+            except IOError:
+                self.send_string('')
             else:
-                self.send_response(self.iopub_socket, 'display_data', content)
-            finally:
-                # delete all buffered windows
-                output += self.ferretwrapper.run_command(clear_window_cmd)
+                self.send_display_data('image/{0}'.format(image_type), image_data)
         if output:
-            message = {'name': 'stdout', 'text': output}
-            self.send_response(self.iopub_socket, 'stream', output)
+            self.send_string(output)
 
+    def send_string(self, message, pipe='stdout'):
+        self.send_response(self.iopub_socket, 'stream',
+                           {'name': pipe, 'text': str(message)})
+
+    def send_display_data(self, img_type, img_data, metadata=None):
+        if metadata is None:
+            metadata = {}
+        self.send_response(self.iopub_socket, 'display_data',
+                           {'data': {img_type: img_data},
+                           'metadata': metadata})
 
     def do_shutdown(self, restart):
         del(self.tf_mgr)
@@ -177,7 +190,10 @@ class TempFileManager(object):
     
     def __exit__(self, *args):
         tmpfile = self.tmp_file_stack.pop()
-        remove(tmpfile)
+        try:
+            remove(tmpfile)
+        except OSError:
+            pass
         
     def __del__(self):
         rmtree(self.tmp_dir)
