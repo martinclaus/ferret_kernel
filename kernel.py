@@ -49,13 +49,12 @@ class FerretKernel(Kernel):
                    allow_stdin=False):
         '''Execute the code send to the kernel '''
 
-        code = self._parse_code(code)
-
-        if not code:
-            return self.build_return()
-        
+        reply_content = {}
+        unkown_err = False
         interrupted = False
         child_died = False
+
+        code = self._parse_code(code)
 
         try:
             self.ferretwrapper.run_command(self.CMD_NEW_WIN)        
@@ -80,26 +79,32 @@ class FerretKernel(Kernel):
                       + 'Ferret died! Restarting Ferret').strip()
             child_died = True
             self._start_ferret()
+        except Exception as err:
+            unkown_err = True
+
         if not silent and output.strip():
             self.send_string(message=output)
 
-        if interrupted:
-            return self.build_return(status='abort')
-        
-        if child_died:
-            return self.build_return(status='abort')
-        
-        return self.build_return()
+        reply_content[u'status'] = u'ok'
 
-    def build_return(self, status='ok'):
-        if status == 'ok':
-            return {'status': 'ok',
-                    'execution_count': self.execution_count,
-                    'payload': [],
-                    'user_expressions': {},
-                   }
-        else:
-            return {'status': status, 'execution_count': self.execution_count}
+        if interrupted:
+            reply_content[u'status'] = u'abort'
+
+        if child_died:
+            reply_content[u'status'] = u'error'
+
+        if unkown_err:
+            reply_content[u'status'] = u'error'
+            reply_content.update({
+                u'ename': type(err).__name__,
+                u'evalue': str(err) 
+            })
+        reply_content[u'execution_count'] = self.execution_count
+        reply_content[u'user_expressions'] = {}
+        reply_content[u'payload'] = []
+        
+        return reply_content
+
 
     def _parse_code(self, code):
         code_lines = code.split('\n')
@@ -154,9 +159,11 @@ class FerretKernel(Kernel):
         if output:
             self.send_string(output)
 
+
     def send_string(self, message, pipe='stdout'):
         self.send_response(self.iopub_socket, 'stream',
                            {'name': pipe, 'text': str(message)})
+
 
     def send_display_data(self, img_type, img_data, metadata=None):
         if metadata is None:
@@ -164,6 +171,7 @@ class FerretKernel(Kernel):
         self.send_response(self.iopub_socket, 'display_data',
                            {'data': {img_type: img_data},
                            'metadata': metadata})
+
 
     def do_shutdown(self, restart):
         del(self.tf_mgr)
