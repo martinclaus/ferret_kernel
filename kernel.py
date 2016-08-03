@@ -6,6 +6,7 @@ Created on Tue Aug  2 10:04:02 2016
 """
 
 from ipykernel.kernelbase import Kernel
+from IPython.display import Image
 from pexpect import replwrap, EOF
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
@@ -14,6 +15,7 @@ import base64
 import imghdr
 
 __version__ = '0.1'
+
 
 def ferret_wrapper(command="pyferret -nojnl -nodisplay -server", orig_prompt=u'yes?'):
     ''' Start a ferret shell and retrun a :class:`REPLWrapper` object. '''
@@ -49,14 +51,14 @@ class FerretKernel(Kernel):
                    allow_stdin=False):
         '''Execute the code send to the kernel '''
 
-        reply_content = {}
         unkown_err = False
         interrupted = False
         child_died = False
 
-        code = self._parse_code(code)
-
         try:
+
+            code = self._parse_code(code)
+
             self.ferretwrapper.run_command(self.CMD_NEW_WIN)        
         
             for c_line in code:
@@ -81,29 +83,36 @@ class FerretKernel(Kernel):
             self._start_ferret()
         except Exception as err:
             unkown_err = True
+        finally:
 
-        if not silent and output.strip():
-            self.send_string(message=output)
-
-        reply_content[u'status'] = u'ok'
-
-        if interrupted:
-            reply_content[u'status'] = u'abort'
-
-        if child_died:
-            reply_content[u'status'] = u'error'
-
-        if unkown_err:
-            reply_content[u'status'] = u'error'
-            reply_content.update({
-                u'ename': type(err).__name__,
-                u'evalue': str(err) 
-            })
-        reply_content[u'execution_count'] = self.execution_count
-        reply_content[u'user_expressions'] = {}
-        reply_content[u'payload'] = []
-        
-        return reply_content
+            if not silent and output.strip():
+                self.send_string(message=output, stream="stderr")
+    
+            execute_reply = {}
+            execute_reply[u'status'] = u'ok'
+    
+            if interrupted:
+                execute_reply[u'status'] = u'abort'
+            elif child_died:
+                execute_reply.update({
+                    u'status': u'error',
+                    u'ename': "Kernel died",
+                    u'evalue': str(EOF),
+                    u'traceback': [] 
+                })
+            elif unkown_err:
+                execute_reply.update({
+                    u'status': u'error',
+                    u'ename': type(err).__name__,
+                    u'evalue': str(err),
+                    u'traceback': [] 
+                })
+            else:
+                execute_reply[u'execution_count'] = self.execution_count
+                execute_reply[u'user_expressions'] = {}
+                #execute_reply[u'payload'] = []
+            
+            return execute_reply
 
 
     def _parse_code(self, code):
@@ -160,9 +169,9 @@ class FerretKernel(Kernel):
             self.send_string(output)
 
 
-    def send_string(self, message, pipe='stdout'):
+    def send_string(self, message, stream='stdout'):
         self.send_response(self.iopub_socket, 'stream',
-                           {'name': pipe, 'text': str(message)})
+                           {'name': stream, 'text': str(message)})
 
 
     def send_display_data(self, img_type, img_data, metadata=None):
