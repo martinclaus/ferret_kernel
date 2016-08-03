@@ -6,7 +6,7 @@ Created on Tue Aug  2 10:04:02 2016
 """
 
 from ipykernel.kernelbase import Kernel
-from IPython.display import Image
+from IPython.display import Image, TextDisplayObject as Text, display
 from pexpect import replwrap, EOF
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
@@ -37,6 +37,8 @@ class FerretKernel(Kernel):
     CMD_FRAME = 'frame/file="{0}"'
     CMD_NEW_WIN = 'set window/new'
 
+    supported_mimetypes = ("text/plain", "image/png", "image/gif")
+
     def __init__(self, **kwargs):
         super(FerretKernel, self).__init__(**kwargs)
         self._start_ferret()
@@ -54,39 +56,52 @@ class FerretKernel(Kernel):
         unkown_err = False
         interrupted = False
         child_died = False
+        
+        std_output = {'data': {}, 'metadata': {}}
+        std_output['data'] = {mimetype: [] for mimetype in self.supported_mimetypes}
+        err_output = []
 
         try:
 
             code = self._parse_code(code)
 
-            self.ferretwrapper.run_command(self.CMD_NEW_WIN)        
+            self.ferretwrapper.run_command(self.CMD_NEW_WIN)
         
             for c_line in code:
-                output = self.ferretwrapper.run_command(c_line.strip(), timeout=None).strip()
+                self._add_text_to_output(
+                    std_output,
+                    self.ferretwrapper.run_command(
+                        c_line.strip(), timeout=None
+                    )
+                )
             
-                if not silent and output.strip():
-                    self.send_string(message=output)
-                output = ''
-
-            self.handle_graphic_output()
+            self.handle_graphic_output(std_output)
             self.ferretwrapper.run_command(self.CMD_CLEAR_WIN)
 
         except KeyboardInterrupt:
             self.ferretwrapper.child.sendintr()
             interrupted = True
             self.ferretwrapper._expect_prompt()
-            output = self.ferretwrapper.child.before.strip()
+            err_output.append(self.ferretwrapper.child.before.strip())
+            err_output.append("KeyboardInterrupt")
+
         except EOF:
-            output = (self.ferretwrapper.child.before
-                      + 'Ferret died! Restarting Ferret').strip()
+            err_output.append(self.ferretwrapper.child.before.strip())
+            err_output.append('Ferret died! Restarting Ferret')
             child_died = True
             self._start_ferret()
+
         except Exception as err:
             unkown_err = True
+            err_output.append(str(err))
+
         finally:
 
-            if not silent and output.strip():
-                self.send_string(message=output, stream="stderr")
+            if not silent and err_output:
+                self.send_string(message="\n".join(err_output), stream="stderr")
+
+            if not silent and std_output['data']:
+                self.send_execute_result(std_output)
     
             execute_reply = {}
             execute_reply[u'status'] = u'ok'
@@ -113,6 +128,10 @@ class FerretKernel(Kernel):
                 #execute_reply[u'payload'] = []
             
             return execute_reply
+
+    def _add_text_to_output(self, output, text):
+        if text.strip():
+            output['data']['text/plain'].append(text.strip())
 
 
     def _parse_code(self, code):
@@ -147,7 +166,7 @@ class FerretKernel(Kernel):
             return False
 
 
-    def handle_graphic_output(self):
+    def handle_graphic_output(self, output):
         output = ''
         with self.tf_mgr as tmpfile:
             try:
@@ -168,6 +187,13 @@ class FerretKernel(Kernel):
         if output:
             self.send_string(output)
 
+
+    def send_execute_result(self, result):
+        content = {'execution_count': self.execution_count}
+        content.update(result)
+        content['data']['text/plain'] = "\n\n".join(content['data']['text/plain'])
+        self.send_response(self.iopub_socket, 'execute_result',
+                           content)
 
     def send_string(self, message, stream='stdout'):
         self.send_response(self.iopub_socket, 'stream',
