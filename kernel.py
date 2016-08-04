@@ -7,10 +7,11 @@ Created on Tue Aug  2 10:04:02 2016
 
 from ipykernel.kernelbase import Kernel
 from IPython.display import Image, TextDisplayObject as Text, display
+import IPython.core.formatters as formatters
 from pexpect import replwrap, EOF
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
-from os import remove
+from os import remove 
 import base64
 import imghdr
 
@@ -43,6 +44,7 @@ class FerretKernel(Kernel):
         super(FerretKernel, self).__init__(**kwargs)
         self._start_ferret()
         self.tf_mgr = TempFileManager(".png")
+        self.formatter = formatters.DisplayFormatter()
 
     
     def _start_ferret(self):
@@ -167,25 +169,41 @@ class FerretKernel(Kernel):
 
 
     def handle_graphic_output(self, output):
-        output = ''
+        img_output = {}
         with self.tf_mgr as tmpfile:
             try:
-                output += self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
-                                                         timeout=None)
-                with open(tmpfile, 'rb') as f:
-                    image = f.read()
-                image_type = imghdr.what(None, image)
-                if image_type is None:
-                    raise ValueError("Not a valid image: %s" % tmpfile)
-                image_data = base64.b64encode(image).decode('ascii')
-            except ValueError as e:
-                self.send_string(str(e))
-            except IOError:
-                self.send_string('')
+                self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
+                                               timeout=None)
+                try:
+                    im = Image(filename=tmpfile)
+                    img_output['data'], img_output['metadata'] = self.formatter.format(im)
+                    for mimetype, value in img_output['data'].items():
+                        if isinstance(value, bytes):
+                            img_output['data'][mimetype] = base64.encodestring(value)
+                except IOError:
+                    pass
+            except Exception as e:
+                self.send_string(str(e), 'stderr')
             else:
-                self.send_display_data('image/{0}'.format(image_type), image_data)
-        if output:
-            self.send_string(output)
+                if img_output:
+                    self.send_display_data(img_output)
+            
+#                output += self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
+#                                                         timeout=None)
+#                with open(tmpfile, 'rb') as f:
+#                    image = f.read()
+#                image_type = imghdr.what(None, image)
+#                if image_type is None:
+#                    raise ValueError("Not a valid image: %s" % tmpfile)
+#                image_data = base64.b64encode(image).decode('ascii')
+#            except ValueError as e:
+#                self.send_string(str(e))
+#            except IOError:
+#                self.send_string('')
+#            else:
+#                self.send_display_data('image/{0}'.format(image_type), image_data)
+#        if output:
+#            self.send_string(output)
 
 
     def send_execute_result(self, result):
@@ -200,12 +218,8 @@ class FerretKernel(Kernel):
                            {'name': stream, 'text': str(message)})
 
 
-    def send_display_data(self, img_type, img_data, metadata=None):
-        if metadata is None:
-            metadata = {}
-        self.send_response(self.iopub_socket, 'display_data',
-                           {'data': {img_type: img_data},
-                           'metadata': metadata})
+    def send_display_data(self, data):
+        self.send_response(self.iopub_socket, 'display_data', data)
 
 
     def do_shutdown(self, restart):
