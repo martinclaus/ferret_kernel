@@ -6,14 +6,14 @@ Created on Tue Aug  2 10:04:02 2016
 """
 
 from ipykernel.kernelbase import Kernel
-from IPython.display import Image, TextDisplayObject as Text, display
+from IPython.display import Image
 import IPython.core.formatters as formatters
 from pexpect import replwrap, EOF
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
 from os import remove 
 import base64
-import imghdr
+import re
 
 __version__ = '0.1'
 
@@ -38,7 +38,11 @@ class FerretKernel(Kernel):
     CMD_FRAME = 'frame/file="{0}"'
     CMD_NEW_WIN = 'set window/new'
 
-    supported_mimetypes = ("text/plain", "image/png", "image/gif")
+    ferret_error_idents = ["\*\*ERROR:", "\*\*TMAP ERR:", "BUFF EMPTY"]
+    
+    FERRET_ERROR = re.compile(
+        "(" + ")|(".join(["^[ ]*" + err_ident for err_ident in ferret_error_idents]) + ")"
+    )
 
     def __init__(self, **kwargs):
         super(FerretKernel, self).__init__(**kwargs)
@@ -59,8 +63,6 @@ class FerretKernel(Kernel):
         interrupted = False
         child_died = False
         
-        std_output = {'data': {}, 'metadata': {}}
-        std_output['data'] = {mimetype: [] for mimetype in self.supported_mimetypes}
         err_output = []
 
         try:
@@ -70,14 +72,12 @@ class FerretKernel(Kernel):
             self.ferretwrapper.run_command(self.CMD_NEW_WIN)
         
             for c_line in code:
-                self._add_text_to_output(
-                    std_output,
-                    self.ferretwrapper.run_command(
-                        c_line.strip(), timeout=None
-                    )
-                )
+                out = self.ferretwrapper.run_command(c_line.strip(),
+                                                     timeout=None)
+                if not silent and out:
+                    self.display(out)
             
-            self.handle_graphic_output(std_output)
+            self.handle_graphic_output()
             self.ferretwrapper.run_command(self.CMD_CLEAR_WIN)
 
         except KeyboardInterrupt:
@@ -98,42 +98,33 @@ class FerretKernel(Kernel):
             err_output.append(str(err))
 
         finally:
-
             if not silent and err_output:
-                self.send_string(message="\n".join(err_output), stream="stderr")
-
-            if not silent and std_output['data']:
-                self.send_execute_result(std_output)
+                self.display("\n".join(err_output), stream="stderr")
     
-            execute_reply = {}
-            execute_reply[u'status'] = u'ok'
-    
-            if interrupted:
-                execute_reply[u'status'] = u'abort'
-            elif child_died:
-                execute_reply.update({
-                    u'status': u'error',
-                    u'ename': "Kernel died",
-                    u'evalue': str(EOF),
-                    u'traceback': [] 
-                })
-            elif unkown_err:
-                execute_reply.update({
-                    u'status': u'error',
-                    u'ename': type(err).__name__,
-                    u'evalue': str(err),
-                    u'traceback': [] 
-                })
-            else:
-                execute_reply[u'execution_count'] = self.execution_count
-                execute_reply[u'user_expressions'] = {}
-                #execute_reply[u'payload'] = []
-            
-            return execute_reply
+        execute_reply = {}
+        execute_reply[u'status'] = u'ok'
 
-    def _add_text_to_output(self, output, text):
-        if text.strip():
-            output['data']['text/plain'].append(text.strip())
+        if interrupted:
+            execute_reply[u'status'] = u'abort'
+        elif child_died:
+            execute_reply.update({
+                u'status': u'error',
+                u'ename': "Kernel died",
+                u'evalue': str(EOF),
+                u'traceback': [] 
+            })
+        elif unkown_err:
+            execute_reply.update({
+                u'status': u'error',
+                u'ename': type(err).__name__,
+                u'evalue': str(err),
+                u'traceback': [] 
+            })
+        else:
+            execute_reply[u'execution_count'] = self.execution_count
+            execute_reply[u'user_expressions'] = {}
+        
+        return execute_reply
 
 
     def _parse_code(self, code):
@@ -153,82 +144,76 @@ class FerretKernel(Kernel):
         return continuation_lines
 
 
-    def _has_active_window(self):
-        test_code = "show window"
-        separator = '\r\n'
-        output = self.ferretwrapper.run_command(test_code, timeout=None)
-        output = output.split(separator)
-        test_string = output[1].split()[0]
-        try:
-            # test_string is an integer
-            int(test_string)
-            return True
-        except ValueError:
-            # test_string is 'no'
-            return False
-
-
-    def handle_graphic_output(self, output):
-        img_output = {}
+    def handle_graphic_output(self):
         with self.tf_mgr as tmpfile:
             try:
                 self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
                                                timeout=None)
                 try:
                     im = Image(filename=tmpfile)
-                    img_output['data'], img_output['metadata'] = self.formatter.format(im)
-                    for mimetype, value in img_output['data'].items():
-                        if isinstance(value, bytes):
-                            img_output['data'][mimetype] = base64.encodestring(value)
                 except IOError:
                     pass
+                else:
+                    self.display(im)
+                    
             except Exception as e:
-                self.send_string(str(e), 'stderr')
+                self.display(str(e), 'stderr')
+
+
+    def display(self, data, stream='stdout'):
+
+        if type(data) in (str, unicode):
+            self.send_string(data, stream)
+
+        # images and other objects
+        else:
+            self.send_display_data(data)
+
+
+    def format_data(self, data):
+        try:
+            if not data.strip():
+                return {'data': {}, 'metadata': {}}
+        except AttributeError:
+            pass
+        repre, metadata = self.formatter.format(data)
+
+        for mimetype, value in repre.items():
+            # serialize binary objects like images
+            if isinstance(value, bytes):
+                repre[mimetype] = base64.encodestring(value).decode('utf-8')
             else:
-                if img_output:
-                    self.send_display_data(img_output)
-            
-#                output += self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
-#                                                         timeout=None)
-#                with open(tmpfile, 'rb') as f:
-#                    image = f.read()
-#                image_type = imghdr.what(None, image)
-#                if image_type is None:
-#                    raise ValueError("Not a valid image: %s" % tmpfile)
-#                image_data = base64.b64encode(image).decode('ascii')
-#            except ValueError as e:
-#                self.send_string(str(e))
-#            except IOError:
-#                self.send_string('')
-#            else:
-#                self.send_display_data('image/{0}'.format(image_type), image_data)
-#        if output:
-#            self.send_string(output)
+                try:
+                    repre[mimetype] = str(value).strip()
+                except:
+                    repre[mimetype] = repr(value)
 
-
-    def send_execute_result(self, result):
-        content = {'execution_count': self.execution_count}
-        content.update(result)
-        content['data']['text/plain'] = "\n\n".join(content['data']['text/plain'])
-        self.send_response(self.iopub_socket, 'execute_result',
-                           content)
+        return {'data': repre, 'metadata': metadata}
+        
 
     def send_string(self, message, stream='stdout'):
+        message = message.strip()
+
+        if not message:
+            return
+
+        if not message.endswith('\n'):
+            message += '\n'
+
+        if self.FERRET_ERROR.match(message):
+            stream = 'stderr'
+        
         self.send_response(self.iopub_socket, 'stream',
                            {'name': stream, 'text': str(message)})
 
 
     def send_display_data(self, data):
-        self.send_response(self.iopub_socket, 'display_data', data)
+        self.send_response(self.iopub_socket, 'display_data',
+                           self.format_data(data))
 
 
     def do_shutdown(self, restart):
         del(self.tf_mgr)
-
-#    def do_complete(self, code, cursor_pos):
-#        ''' Code completion '''
-#        # Not implemented yet
-#        super(Kernel, self).do_complete(code, cursor_pos)
 
 
 class TempFileManager(object):
