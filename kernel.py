@@ -5,26 +5,34 @@ Created on Tue Aug  2 10:04:02 2016
 @author: mclaus
 """
 
+from __future__ import print_function
+
 from ipykernel.kernelbase import Kernel
 from IPython.display import Image
 import IPython.core.formatters as formatters
 from pexpect import replwrap, EOF
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
-from os import remove 
+import os
 import base64
 import re
 
 __version__ = '0.1'
 
 
-def ferret_wrapper(command="pyferret -nojnl -nodisplay -server", orig_prompt=u'yes?'):
-    ''' Start a ferret shell and retrun a :class:`REPLWrapper` object. '''
-    return replwrap.REPLWrapper(command, orig_prompt=orig_prompt,
-                                prompt_change=None)
+def ferret_wrapper(command="pyferret", args="-nojnl -nodisplay -server",
+                   orig_prompt=u'yes?'):
+    '''
+    Start a pyferret shell and retrun a :class:`REPLWrapper` object.
+    '''
+    return replwrap.REPLWrapper(" ".join((command, args)),
+                                orig_prompt=orig_prompt, prompt_change=None)
 
 
 class FerretKernel(Kernel):
+    '''
+    Ferret language kernel for the jupyter notebook server.
+    '''
     
     implementation = 'Ferret'
     implementation_version = __version__
@@ -33,6 +41,8 @@ class FerretKernel(Kernel):
     language_info = {'name': language,
                      'mimetype': 'text/plain'}
     banner = "Ferret Kernel"
+
+    FERRET_COMMAD_KEY = "FER_COMMAND"
 
     CMD_CLEAR_WIN = "cancel window/all"
     CMD_FRAME = 'frame/file="{0}"'
@@ -52,12 +62,20 @@ class FerretKernel(Kernel):
 
     
     def _start_ferret(self):
-        self.ferretwrapper = ferret_wrapper()
+        '''
+        Starts pyferret. The path to a pyferret installation can be
+        specified using the FER_COMMAND environmental variable. This can
+        also be set in the env dictionary specified in the kernel.json. 
+        '''
+        command = os.environ.get(self.FERRET_COMMAD_KEY, "pyferret")
+        self.ferretwrapper = ferret_wrapper(command)
 
     
     def do_execute(self, code, silent, store_history=True, user_expressions=None,
                    allow_stdin=False):
-        '''Execute the code send to the kernel '''
+        '''
+        Execute the code send to the kernel line by line in the pyferret shell.
+        '''
 
         unkown_err = False
         interrupted = False
@@ -128,6 +146,9 @@ class FerretKernel(Kernel):
 
 
     def _parse_code(self, code):
+        '''
+        Split cell code into lines but concatenate multi-line statements.
+        '''
         code_lines = code.split('\n')
         continuation_lines = []
         for line in code_lines:
@@ -145,12 +166,16 @@ class FerretKernel(Kernel):
 
 
     def handle_graphic_output(self):
+        '''
+        Run frame command and send image data to frontend.
+        '''
         with self.tf_mgr as tmpfile:
             try:
                 self.ferretwrapper.run_command(self.CMD_FRAME.format(tmpfile),
                                                timeout=None)
                 try:
                     im = Image(filename=tmpfile)
+                # No image produced by cell
                 except IOError:
                     pass
                 else:
@@ -161,6 +186,9 @@ class FerretKernel(Kernel):
 
 
     def display(self, data, stream='stdout'):
+        '''
+        Send data to frondend.
+        '''
 
         if type(data) in (str, unicode):
             self.send_string(data, stream)
@@ -171,6 +199,11 @@ class FerretKernel(Kernel):
 
 
     def format_data(self, data):
+        '''
+        Serialize data, which can be any python object or type, and return
+        a dictionary ready to be send as a `display_data` reply.
+        See [Messaging in Jupyter](http://jupyter-client.readthedocs.io/en/latest/messaging.html#display-data)
+        '''
         try:
             if not data.strip():
                 return {'data': {}, 'metadata': {}}
@@ -192,6 +225,12 @@ class FerretKernel(Kernel):
         
 
     def send_string(self, message, stream='stdout'):
+        '''
+        Send text `message` to the frontend using stream `stream`. If `message`
+        contains no non-blank characters, nothing is send. If `message` matches
+        on of the Ferret error message patterns (`self.ferret_error_idents`), the
+        stream will be changed to `'stderr'`.
+        '''
         message = message.strip()
 
         if not message:
@@ -208,15 +247,24 @@ class FerretKernel(Kernel):
 
 
     def send_display_data(self, data):
+        '''
+        Send display_data response.
+        '''
         self.send_response(self.iopub_socket, 'display_data',
                            self.format_data(data))
 
 
     def do_shutdown(self, restart):
+        '''
+        Clean-up actions.
+        '''
         del(self.tf_mgr)
 
 
 class TempFileManager(object):
+    '''
+    Context manager class to handle temporary files for graphical output.
+    '''
 
     def __init__(self, suffix):
         if suffix.startswith("."):
@@ -234,7 +282,7 @@ class TempFileManager(object):
     def __exit__(self, *args):
         tmpfile = self.tmp_file_stack.pop()
         try:
-            remove(tmpfile)
+            os.remove(tmpfile)
         except OSError:
             pass
         
