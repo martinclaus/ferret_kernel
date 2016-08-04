@@ -17,7 +17,7 @@ import os
 import base64
 import re
 
-__version__ = '0.1'
+__version__ = '0.1.0'
 
 
 def ferret_wrapper(command="pyferret", args="-nojnl -nodisplay -server",
@@ -305,8 +305,3 @@ class TempFileManager(object):
     def __del__(self):
         rmtree(self.tmp_dir)
         self.tmp_file_stack = []
-
-
-if __name__ == '__main__':
-    from ipykernel.kernelapp import IPKernelApp
-    IPKernelApp.launch_instance(kernel_class=FerretKernel)
