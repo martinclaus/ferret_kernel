@@ -43,6 +43,10 @@ class FerretKernel(Kernel):
     banner = "Ferret Kernel"
 
     FERRET_COMMAD_KEY = "FER_COMMAND"
+    DEFAULT_FERRET_COMMAND = "pyferret"
+    
+    IMAGE_EXTENSION_KEY = "FER_IMGEXT"
+    DEFAULT_IMAGE_EXTENSION = ".png"
 
     CMD_CLEAR_WIN = "cancel window/all"
     CMD_FRAME = 'frame/file="{0}"'
@@ -55,20 +59,31 @@ class FerretKernel(Kernel):
     )
 
     def __init__(self, **kwargs):
+        '''
+        Starts pyferret, creates a tempfile manager and formatter.
+        
+        Useful environmental variables:
+            FER_COMMAND: Path to the pyferret executable. (Default: pyferret)
+            FER_IMGEXT:  File format to use for graphical ouput. (Default: .png)
+            
+        The environmental variables can also be set in the `env` dictionary
+        in the kernel.json file. 
+        '''
+        
         super(FerretKernel, self).__init__(**kwargs)
-        self._start_ferret()
-        self.tf_mgr = TempFileManager(".png")
-        self.formatter = formatters.DisplayFormatter()
 
-    
-    def _start_ferret(self):
-        '''
-        Starts pyferret. The path to a pyferret installation can be
-        specified using the FER_COMMAND environmental variable. This can
-        also be set in the env dictionary specified in the kernel.json. 
-        '''
-        command = os.environ.get(self.FERRET_COMMAD_KEY, "pyferret")
+        # Start ferret
+        command = os.environ.get(self.FERRET_COMMAD_KEY,
+                                 self.DEFAULT_FERRET_COMMAND)
         self.ferretwrapper = ferret_wrapper(command)
+
+        # get tempfile manager
+        img_ext = os.environ.get(self.IMAGE_EXTENSION_KEY,
+                                 self.DEFAULT_IMAGE_EXTENSION)
+        self.tf_mgr = TempFileManager(img_ext)
+        
+        # get formatter for rich display
+        self.formatter = formatters.DisplayFormatter()
 
     
     def do_execute(self, code, silent, store_history=True, user_expressions=None,
@@ -226,10 +241,11 @@ class FerretKernel(Kernel):
 
     def send_string(self, message, stream='stdout'):
         '''
-        Send text `message` to the frontend using stream `stream`. If `message`
-        contains no non-blank characters, nothing is send. If `message` matches
-        on of the Ferret error message patterns (`self.ferret_error_idents`), the
-        stream will be changed to `'stderr'`.
+        Send text `message` to the frontend using stream `stream`.
+        
+        If `message` contains no non-blank characters, nothing is send.
+        If `message` matches on of the Ferret error message patterns
+        (`self.ferret_error_idents`), the stream will be changed to `'stderr'`.
         '''
         message = message.strip()
 
